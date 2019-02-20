@@ -10,13 +10,13 @@
 """
 import imaplib, email
 import sys
-import os  
-import smtplib  
-import mimetypes  
-from email.MIMEMultipart import MIMEMultipart  
+import os
+import smtplib
+import mimetypes
+from email.MIMEMultipart import MIMEMultipart
 from email.MIMEBase import MIMEBase
-from email.MIMEText import MIMEText 
-from email.encoders import encode_base64  
+from email.MIMEText import MIMEText
+from email.encoders import encode_base64
 from email.header import Header
 
 reload(sys)
@@ -31,11 +31,11 @@ class ReceiveMailDealer:
         self.mail = imaplib.IMAP4_SSL(server)
         self.mail.login(username, password)
         self.select("INBOX")
-        
+
     #返回所有文件夹
     def showFolders(self):
         return self.mail.list()
-    
+
     #选择收件箱（如“INBOX”，如果不知道可以调用showFolders）
     def select(self, selector):
         return self.mail.select(selector)
@@ -51,7 +51,7 @@ class ReceiveMailDealer:
     #返回所有未读的邮件列表（返回的是包含邮件序号的列表）
     def getUnread(self):
         return self.search(None,"Unseen")
-    
+
     #以RFC822协议格式返回邮件详情的email对象
     def getEmailFormat(self, num):
         data = self.mail.fetch(num, 'RFC822')
@@ -137,19 +137,19 @@ class ReceiveMailDealer:
             'subject' : self.getSubjectContent(msg),
             'body' : body,
             'html' : html,
-            'from' : self.getSenderInfo(msg), 
-            'to' : self.getReceiverInfo(msg), 
+            'from' : self.getSenderInfo(msg),
+            'to' : self.getReceiverInfo(msg),
             'attachments': attachments,
         }
 
 
 #*********发送邮件部分(smtp)**********
-    
+
 class SendMailDealer:
 
     #构造函数（用户名，密码，smtp服务器）
     def __init__(self, user, passwd, smtp,port,usettls=False):
-        self.mailUser = user  
+        self.mailUser = user
         self.mailPassword = passwd
         self.smtpServer = smtp
         self.smtpPort   = port
@@ -157,12 +157,13 @@ class SendMailDealer:
             smtp_class = smtplib.SMTP_SSL
         else:
             smtp_class = smtplib.SMTP
-        self.mailServer = smtp_class(self.smtpServer, self.smtpPort)  
-        self.mailServer.ehlo()  
+        self.mailServer = smtp_class(self.smtpServer, self.smtpPort)
+        self.mailServer.ehlo()
+        self.mailServer.starttls()
         self.mailServer.login(self.mailUser, self.mailPassword)
         self.msg = MIMEMultipart()
 
-    #对象销毁时，关闭mailserver    
+    #对象销毁时，关闭mailserver
     def __del__(self):
         self.mailServer.close()
 
@@ -171,25 +172,25 @@ class SendMailDealer:
         self.msg = MIMEMultipart()
 
     #设置邮件的基本信息（收件人，主题，正文，正文类型html或者plain，可变参数附件路径列表）
-    def setMailInfo(self, receiveUser, subject, text, text_type,*attachmentFilePaths):    
-        self.msg['From'] = self.mailUser  
+    def setMailInfo(self, receiveUser, subject, text, text_type,*attachmentFilePaths):
+        self.msg['From'] = self.mailUser
         self.msg['To'] = receiveUser
-        
-        self.msg['Subject'] = subject  
+
+        self.msg['Subject'] = subject
         self.msg.attach(MIMEText(text, text_type))
         for attachmentFilePath in attachmentFilePaths:
-            self.msg.attach(self.getAttachmentFromFile(attachmentFilePath))   
+            self.msg.attach(self.getAttachmentFromFile(attachmentFilePath))
 
     #自定义邮件正文信息（正文内容，正文格式html或者plain）
     def addTextPart(self, text, text_type):
         self.msg.attach(MIMEText(text, text_type))
-        
+
 
     #增加附件（以流形式添加，可以添加网络获取等流格式）参数（文件名，文件流）
     def addAttachment(self, filename, filedata):
-        part = MIMEBase('application', "octet-stream")  
-        part.set_payload(filedata)  
-        encode_base64(part)  
+        part = MIMEBase('application', "octet-stream")
+        part.set_payload(filedata)
+        encode_base64(part)
         part.add_header('Content-Disposition', 'attachment; filename="%s"' % str(Header(filename, 'utf8')))
         self.msg.attach(part)
 
@@ -201,17 +202,17 @@ class SendMailDealer:
     def sendMail(self):
         if not self.msg['To']:
             print "没有收件人,请先设置邮件基本信息"
-            return 
+            return
         self.mailServer.sendmail(self.mailUser, self.msg['To'], self.msg.as_string())
-        print('Sent email to %s' % self.msg['To'])  
+        print('Sent email to %s' % self.msg['To'])
 
-    
+
     #通过路径添加附件
     def getAttachmentFromFile(self, attachmentFilePath):
-        part = MIMEBase('application', "octet-stream")  
-        part.set_payload(open(attachmentFilePath,"rb").read())  
-        encode_base64(part)  
-        part.add_header('Content-Disposition', 'attachment; filename="%s"' % str(Header(attachmentFilePath, 'utf8')))   
+        part = MIMEBase('application', "octet-stream")
+        part.set_payload(open(attachmentFilePath,"rb").read())
+        encode_base64(part)
+        part.add_header('Content-Disposition', 'attachment; filename="%s"' % str(Header(attachmentFilePath, 'utf8')))
         return part
 
 if __name__ == "__main__":
@@ -227,7 +228,7 @@ if __name__ == "__main__":
         print rml.getUnread()#('OK',['1 2 3 4'])
         # 3 遍历未读邮件
         for num in rml.getUnread()[1][0].split(' '):
-            if num != '':   
+            if num != '':
                 mailInfo = rml.getMailInfo(num)
                 print mailInfo['subject']
                 print mailInfo['body']

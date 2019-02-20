@@ -119,7 +119,7 @@ class ZabbixAPI(object):
     # HTTP authentication
     httpuser = None
     httppasswd = None
-    timeout = 10
+    timeout = 100
     validate_certs = None
     # sub-class instances.
     # Constructor Params:
@@ -205,9 +205,24 @@ class ZabbixAPI(object):
         hashed_pw_string = "md5(" + hashlib.md5(l_password.encode('utf-8')).hexdigest() + ")"
         self.debug(logging.DEBUG, "Trying to login with %s:%s" %
                 (repr(l_user), repr(hashed_pw_string)))
-        obj = self.json_obj('user.login', {'user': l_user, 'password': l_password}, auth=False)
+        obj = self.json_obj('user.login', {'user': l_user, 'password': l_password, 'userData': True}, auth=False)
         result = self.do_request(obj)
-        self.auth = result['result']
+        self.auth = result['result']['sessionid']
+        return result
+
+    def logout(self):
+        if not self.auth:
+            raise ZabbixAPIException("No authentication information available.")
+
+        # don't print the raw password.
+        self.debug(logging.DEBUG, "Trying to logout %s" %
+                (repr(self.auth)))
+        obj = self.json_obj('user.logout', {})
+        result = self.do_request(obj)
+        if result['result']:
+            return "logout success"
+        else:
+            return "logout failed %s"%(result)
 
     def test_login(self):
         if self.auth != '':

@@ -40,16 +40,17 @@ def week_report():
     select_condition = {"hostgroupID":"",
             "hostID":""
     }
-    zabbix.report_available2(str(date_from),str(date_to),export_xls,select_condition,itemkey_list=itemkey_list)
+    zabbix._report_available2(str(date_from),str(date_to),export_xls,select_condition,itemkey_list=itemkey_list)
     
     # 1 初始化发送邮件类
     # 25 端口时，usettls = False
     # 465 端口时,usettls = True
     usettls = False
-    sml = pyMail.SendMailDealer('mail_address','mail_pwd','smtp.gmail.com','25',usettls = usettls)
+    # sml = pyMail.SendMailDealer('mail_address','mail_pwd','smtp.gmail.com','25',usettls = usettls)
+    sml = pyMail.SendMailDealer('buildbot@goland.cn','123456','mail.goland.cn','25',usettls = usettls)
     # 2 设置邮件信息
     # 参数包括("收件人","标题","正文","格式html/plain","附件路径1","附件路径2")
-    sml.setMailInfo('paramiao@gmail.com','测试','正文','plain',weekreport_name)
+    sml.setMailInfo('tao.wang@goland.cn','测试','正文','plain',weekreport_name)
     # 3 发送邮件
     sml.sendMail()
 def create_config():
