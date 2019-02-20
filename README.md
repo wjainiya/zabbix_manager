@@ -107,7 +107,7 @@ $ git push -f origin master
 
 如果觉得 `zabbix_manager` 对您有帮助，可以请笔者喝杯咖啡
 
-#![Screenshot](images/5.jpg)
+[Screenshot](images/5.jpg)
 
 ## 致谢
 
