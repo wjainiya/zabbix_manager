@@ -172,10 +172,8 @@ class SendMailDealer:
         self.msg = MIMEMultipart()
 
     #设置邮件的基本信息（收件人，主题，正文，正文类型html或者plain，可变参数附件路径列表）
-    def setMailInfo(self, receiveUser, subject, text, text_type,*attachmentFilePaths):
+    def setMailInfo(self, subject, text, text_type,*attachmentFilePaths):
         self.msg['From'] = self.mailUser
-        self.msg['To'] = receiveUser
-
         self.msg['Subject'] = subject
         self.msg.attach(MIMEText(text, text_type))
         for attachmentFilePath in attachmentFilePaths:
@@ -199,12 +197,13 @@ class SendMailDealer:
         self.msg.attach(part)
 
     # 发送邮件
-    def sendMail(self):
-        if not self.msg['To']:
+    def sendMail(self,rec_user):
+        if not rec_user:
             print "没有收件人,请先设置邮件基本信息"
             return
-        self.mailServer.sendmail(self.mailUser, self.msg['To'], self.msg.as_string())
-        print('Sent email to %s' % self.msg['To'])
+        # self.mailServer.sendmail(self.mailUser, self.msg['To'], self.msg.as_string())
+        self.mailServer.sendmail(self.mailUser, rec_user, self.msg.as_string())
+        print('Sent email to %s' % rec_user)
 
 
     #通过路径添加附件

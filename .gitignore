@@ -61,5 +61,8 @@ target/
 #Ipython Notebook
 .ipynb_checkpoints
 
-#Test
+# Test
 test*
+output/
+png/
+bk_*

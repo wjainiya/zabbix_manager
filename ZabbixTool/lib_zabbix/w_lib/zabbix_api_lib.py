@@ -35,10 +35,7 @@ import string
 import sys
 import ssl
 import socket
-try:
-    import urllib2
-except ImportError:
-    import urllib.request as urllib2  # python3
+import requests
 import re
 from collections import deque
 
@@ -114,19 +111,15 @@ class ZabbixAPI(object):
     url = '/api_jsonrpc.php'
     params = None
     method = None
-    # HTTP or HTTPS
-    proto = 'http'
     # HTTP authentication
     httpuser = None
     httppasswd = None
-    timeout = 100
+    timeout = 10
     validate_certs = None
     # sub-class instances.
     # Constructor Params:
     # server: Server to connect to
     # path: Path leading to the zabbix install
-    # proto: Protocol to use. http or https
-    # We're going to use proto://server/path to find the JSON-RPC api.
     #
     # user: HTTP auth username
     # passwd: HTTP auth password
@@ -134,15 +127,13 @@ class ZabbixAPI(object):
     # r_query_len: max len query history
     # **kwargs: Data to pass to each api module
 
-    def __init__(self, server='http://localhost/zabbix', user=httpuser, passwd=httppasswd,
-                 log_level=logging.WARNING, timeout=10, r_query_len=10, validate_certs=True, **kwargs):
+    def __init__(self, server='http://localhost', user=httpuser, passwd=httppasswd,
+                 log_level=logging.WARNING, timeout=100, r_query_len=10, validate_certs=True, **kwargs):
         """ Create an API object.  """
         self._setuplogging()
         self.set_log_level(log_level)
         self.server = server
         self.url = server + '/api_jsonrpc.php'
-        self.proto = self.server.split("://")[0]
-        # self.proto=proto
         self.httpuser = user
         self.httppasswd = passwd
         self.timeout = timeout
@@ -151,6 +142,9 @@ class ZabbixAPI(object):
         self.r_query = deque([], maxlen=r_query_len)
         self.validate_certs = validate_certs
         self.debug(logging.INFO, "url: " + self.url)
+        # add on for url request
+        self.verify = True
+        self.cookie = None
 
     def _setuplogging(self):
         self.logger = logging.getLogger("zabbix_api.%s" % self.__class__.__name__)
@@ -206,9 +200,17 @@ class ZabbixAPI(object):
         self.debug(logging.DEBUG, "Trying to login with %s:%s" %
                 (repr(l_user), repr(hashed_pw_string)))
         obj = self.json_obj('user.login', {'user': l_user, 'password': l_password, 'userData': True}, auth=False)
-        result = self.do_request(obj)
-        self.auth = result['result']['sessionid']
-        return result
+        # zabbix api request
+        api_result = self.do_request(obj)
+        self.auth = api_result['result']['sessionid']
+
+        # zabbix url request
+        data_api = {"name": l_user, "password": l_password, "enter": "Sign in"}
+        # data = json.dumps(data_api)
+        # url_result = requests.post(self.server + "/", data=data_api,verify=self.verify)
+        url_result = self.url_request(req_data=data_api,url=self.server + "/")
+        # self.cookie = url_result.cookies
+
 
     def logout(self):
         if not self.auth:
@@ -236,9 +238,12 @@ class ZabbixAPI(object):
         else:
             return False
 
-    def do_request(self, json_obj,num_retries=3):
+    def do_request(self,json_obj,num_retries=3,url=''):
         headers = {'Content-Type': 'application/json-rpc',
-                   'User-Agent': 'python/zabbix_api'}
+                'User-Agent': 'python/zabbix_api'}
+
+        if url == '':
+            url = self.url
 
         if self.httpuser:
             self.debug(logging.INFO, "HTTP Auth enabled")
@@ -248,44 +253,21 @@ class ZabbixAPI(object):
         self.debug(logging.INFO, "Sending: " + str(json_obj))
         self.debug(logging.DEBUG, "Sending headers: " + str(headers))
 
-        request = urllib2.Request(url=self.url, data=json_obj.encode('utf-8'), headers=headers)
-        if self.proto == "https":
-            if HAS_SSLCONTEXT and not self.validate_certs:
-                https_handler = urllib2.HTTPSHandler(debuglevel=0, context=_create_unverified_context())
-            else:
-                https_handler = urllib2.HTTPSHandler(debuglevel=0)
-            opener = urllib2.build_opener(https_handler)
-        elif self.proto == "http":
-            http_handler = urllib2.HTTPHandler(debuglevel=0)
-            opener = urllib2.build_opener(http_handler)
-        else:
-            raise ZabbixAPIException("Unknow protocol %s" % self.proto)
-
-        urllib2.install_opener(opener)
         try:
-            response = opener.open(request, timeout=self.timeout)
-        except ssl.SSLError as e:
-            if hasattr(e, 'message'):
-                e = e.message
-            raise ZabbixAPIException("ssl.SSLError - %s" % e)
-        except socket.timeout as e:
-            raise APITimeout("HTTP read timeout",)
-        except urllib2.URLError as e:
-            if num_retries>0:  
-                return self.do_request(json_obj,num_retries-1) 
-            if hasattr(e, 'message') and e.message:
-                e = e.message
-            elif hasattr(e, 'reason'):
-                e = e.reason
-            raise ZabbixAPIException("urllib2.URLError - %s" % e)
-        self.debug(logging.INFO, "Response Code: " + str(response.code))
+            request = requests.post(url, data=json_obj.encode('utf-8'), headers=headers,timeout=self.timeout)
+        except Exception as e:
+            if num_retries > 0:
+                return self.do_request(json_obj,num_retries-1)
+            raise ZabbixAPIException("Zabbix requests Error - %s" % e)
+
+        self.debug(logging.INFO, "Response Code: " + str(request.status_code))
 
         # NOTE: Getting a 412 response code means the headers are not in the
         # list of allowed headers.
-        if response.code != 200:
+        if request.status_code != 200:
             raise ZabbixAPIException("HTTP ERROR %s: %s"
-                    % (response.status, response.reason))
-        reads = response.read()
+                    % (request.status_code, request.reason))
+        reads = request.content
         if len(reads) == 0:
             raise ZabbixAPIException("Received zero answer")
         try:
@@ -305,6 +287,42 @@ class ZabbixAPI(object):
             else:
                 raise ZabbixAPIException(msg, jobj['error']['code'])
         return jobj
+
+    def url_request(self,req_data,num_retries=3,url=''):
+        headers = {'Connection':'Keep-Alive',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87'}
+        if url == '':
+            url = self.server
+
+        if self.httpuser:
+            self.debug(logging.INFO, "HTTP Auth enabled")
+            auth = 'Basic ' + string.strip(base64.encodestring(self.httpuser + ':' + self.httppasswd))
+            headers['Authorization'] = auth
+        self.r_query.append(str(req_data))
+        self.debug(logging.INFO, "Sending: " + str(req_data))
+        self.debug(logging.DEBUG, "Sending headers: " + str(req_data))
+
+        self.session = requests.session()
+        try:
+            request = self.session.post(url, data=req_data, headers=headers,timeout=self.timeout,verify=True)
+        except Exception as e:
+            if num_retries > 0:
+                return self.do_request(json_obj,num_retries-1)
+            raise ZabbixAPIException("Zabbix requests Error - %s" % e)
+
+        self.debug(logging.INFO, "Response Code: " + str(request.status_code))
+
+        # NOTE: Getting a 412 response code means the headers are not in the
+        # list of allowed headers.
+        if request.status_code != 200:
+            raise ZabbixAPIException("HTTP ERROR %s: %s"
+                    % (request.status_code, request.reason))
+        if len(request.content) == 0:
+            raise ZabbixAPIException("Received zero answer")
+        self.debug(logging.DEBUG, "Response Body: " + str(request.content))
+
+        return request
+
 
     def logged_in(self):
         if self.auth != '':

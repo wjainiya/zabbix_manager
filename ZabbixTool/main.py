@@ -21,7 +21,9 @@ from zabbix_api import zabbix_api
 import json
 zabbix_tool="/etc/zabbix_tool/zabbix_tool.ini"
 
-def week_report():
+def week_report_xls():
+    ''' 生成 excel 表
+    '''
     import date
     import datetime
     import pyMail
@@ -46,13 +48,85 @@ def week_report():
     # 25 端口时，usettls = False
     # 465 端口时,usettls = True
     usettls = False
-    # sml = pyMail.SendMailDealer('mail_address','mail_pwd','smtp.gmail.com','25',usettls = usettls)
-    sml = pyMail.SendMailDealer('buildbot@goland.cn','123456','mail.goland.cn','25',usettls = usettls)
+    sml = pyMail.SendMailDealer('mail_address','mail_pwd','smtp.gmail.com','25',usettls = usettls)
     # 2 设置邮件信息
     # 参数包括("收件人","标题","正文","格式html/plain","附件路径1","附件路径2")
-    sml.setMailInfo('tao.wang@goland.cn','测试','正文','plain',weekreport_name)
+    sml.setMailInfo('test@gmail.com','测试','正文','plain',weekreport_name)
     # 3 发送邮件
     sml.sendMail()
+
+def week_report_image():
+    ''' 生成 图片
+    '''
+
+    import time
+    import tarfile
+    import json
+    import image_merge
+    import pyMail
+
+    reload(sys)
+    sys.setdefaultencoding("utf-8")
+
+    # date_from = "2019-01-10 00:00:00"
+    # date_till = "2019-01-17 00:00:00"
+
+    dateFormat = "%Y-%m-%d %H:%M:%S"
+    now = time.time()
+    one_week_before = now - 604800
+    date_from = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(one_week_before))
+    date_till = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+
+    zabbix_servers = [
+        "aliyunzabbix",
+        "dvdfabzabbix",
+        "viduszabbix",
+    ]
+
+    for server in zabbix_servers:
+        # #登陆
+        zapi = zabbix_api(profile=server)
+        # #抓图
+        img_dir = "/code/png/" + server
+        res = zapi.get_graph_images(date_from=date_from,date_till=date_till,img_dir=img_dir)
+        # #注销
+        zapi.logout()
+        # #获取图片名称
+        for item in res:
+            img_list = []
+            for name in item['hostimages']:
+                print (name['image_name'])
+                img_list.append(name['image_name'])
+
+            # #合并图片
+            output_dir = "/code/output/" + server
+            image_merge.image_merge(img_list,output_dir=output_dir,output_name=item['hostname']+".jpg")
+
+
+    # #创建压缩包名
+    tar_file = "/code/zabbix_images.tar.gz"
+    tar = tarfile.open(tar_file,"w:gz")
+    # #创建压缩包
+    for root,dir,files in os.walk("/code/output"):
+        for file in files:
+            fullpath = os.path.join(root,file)
+            tar.add(fullpath)
+    tar.close()
+
+
+    # #发送邮件
+    usettls = False
+    # sml = pyMail.SendMailDealer('mail_address','mail_pwd','smtp.gmail.com','25',usettls = usettls)
+    # #2 设置邮件信息
+    send_to = [
+        "test1@gmail.com",
+        "test2@gmail.com"
+    ]
+    for user in send_to:
+        sml.setMailInfo('zabbix数据图','zabbix 监控服务器数据图','plain',tar_file)
+        # 3 发送邮件
+        sml.sendMail(rec_user=user)
+
 def create_config():
     import ConfigParser
     config = ConfigParser.ConfigParser()

@@ -1,11 +1,11 @@
-#!/usr/bin/python 
-#coding:utf-8 
+#!/usr/bin/python
+#coding:utf-8
 #
 # {"status":"OK","output":output}
 from __future__ import print_function
 __version__ = "1.4.04"
- 
-import json 
+
+import json
 import ConfigParser
 import sys
 import os
@@ -15,6 +15,7 @@ import config
 from pydoc import render_doc
 from w_lib.zabbix_api_lib import ZabbixAPI
 import re
+import requests
 
 root_path = os.path.split(os.path.realpath(__file__))[0]
 os.chdir(root_path)
@@ -40,8 +41,23 @@ def err_msg(msg):
 def warn_msg(msg):
     print("\033[43;37m[Warning]: %s \033[0m"%msg)
 
-class zabbix_api: 
-    def __init__(self,terminal_table=False,debug=False,output=True,output_sort=False,sort_reverse=False,profile="zabbixserver"): 
+class zabbix_api:
+
+    def __init__(self,terminal_table=False,debug=False,output=True,output_sort=False,sort_reverse=False,profile="zabbixserver",filters="filter_options"):
+        # 对应chart 后的数字
+        # http://10.10.2.116:8080/chart2.php?graphid=2120&period=604800&stime=20190213093144&isNow=1&profileIdx=web.graphs&profileIdx2=2120&width=1720&screenid=&curtime=1550626308363
+        self.Graph_Chart = {
+            "CPU load": "2",
+            "Disk space usage /": "6",
+            "Disk space usage /etc/hosts": "6",
+            "Memory usage": "2",
+            "Swap usage": "6",
+            "MySQL bandwidth": "2",
+            "MySQL operations": "2",
+            "MySQL Ping": "2",
+            "MySQL SIZE": "2",
+        }
+
         web_access = False
         logpath = "/tmp/zabbix_tool.log"
         self.logger = Log(logpath,level="debug",is_console=debug, mbs=5, count=5)
@@ -71,7 +87,14 @@ class zabbix_api:
             self.port = config.get(profile, "port")
             self.user = config.get(profile, "user")
             self.password = config.get(profile, "password")
+            # 针对获取图片做的添加
+            if config.has_option(profile,"hostnames"):
+                self.hostnames = json.loads((config.get(profile,"hostnames")))
+            if config.has_option(filters,"filters"):
+                self.filters = json.loads((config.get(filters,"filters")))
+
             zabbix_server="http://%s:%s"%(self.server,self.port)
+            self.verify = True
             if web_access == "True":
                 zabbix_server = zabbix_server + '/zabbix'
             if debug:
@@ -79,6 +102,7 @@ class zabbix_api:
             else:
                 self.zapi=ZabbixAPI(server=zabbix_server)
             self.zapi.login(self.user,self.password)
+            self.session = self.zapi.session
             self.__host_id__ = ''
             self.__hostgroup_id__ = ''
         else:
@@ -87,8 +111,8 @@ class zabbix_api:
         self.terminal_table=terminal_table
         self.sepsign=None
     def version(self):
-        print("zabbix version:[%s]"%self.zapi.api_version()) 
-    def host_get(self,hostName=''): 
+        print("zabbix version:[%s]"%self.zapi.api_version())
+    def host_get(self,hostName=''):
         '''
         get host
         [eg1]#zabbix_api host_get
@@ -103,7 +127,7 @@ class zabbix_api:
                       "selectInterfaces":["ip"]})
         if len(response) == 0:
             return 0
-        for host in response:      
+        for host in response:
             status={"0":"OK","1":"Disabled"}
             available={"0":"Unknown","1":Color('{autobggreen}available{/autobggreen}'),"2":Color('{autobgred}Unavailable{/autobgred}')}
             if len(hostName)==0:
@@ -116,7 +140,7 @@ class zabbix_api:
                 return host['hostid']
         self.__generate_output(output)
         return 0
-    def __host_get(self,hostgroupID='',hostID=''): 
+    def __host_get(self,hostgroupID='',hostID=''):
         '''
         内部函数
         返回特定主机组下的主机列表和某个主机的列表
@@ -137,7 +161,7 @@ class zabbix_api:
             group_list[:]=[]
             for i in hostgroupID.split(','):
                 try:
-                    int(i)  
+                    int(i)
                     hostgroup_id = i
                 except:
                     hostgroup_id = self.hostgroup_get(i)
@@ -155,7 +179,7 @@ class zabbix_api:
             for i in hostID.split(','):
                 # 判断输入的 hostID 是数字还是字符串(主机名)
                 try:
-                    int(i)  
+                    int(i)
                     host_id = i
                 except:
                     host_id = self.host_get(i)
@@ -175,7 +199,7 @@ class zabbix_api:
         response=self.zapi.host.get(data_params)
         if len(response) == 0:
             return []
-        for host in response:      
+        for host in response:
             all_host_list.append((host['hostid'],host['host'],host['name'],host['interfaces'][0]["ip"],host["available"]))
         return all_host_list
     def host_list(self):
@@ -220,7 +244,7 @@ class zabbix_api:
             self.__hostgroup_id__ = hostgroupID
         if hostID:
             self.__host_id__ = hostID
-    def host_create(self, hostip,hostname,hostgroupName,templateName): 
+    def host_create(self, hostip,hostname,hostgroupName,templateName):
         '''
         create a host
         [eg1]#zabbix_api host_create 192.168.199.2 "ceshi_host" "store" "Template OS Linux"
@@ -243,20 +267,20 @@ class zabbix_api:
             if not len(templates_info):
                 continue
             var['templateid']=templates_info[0]['templateid']
-            template_list.append(var)   
+            template_list.append(var)
 
         data_params = {
-                "host": hostname, 
-                "interfaces": [ 
-                        { 
-                            "type": 1, 
-                            "main": 1, 
-                            "useip": 1, 
-                            "ip": hostip, 
-                            "dns": "", 
-                            "port": "10050" 
-                        } 
-                    ], 
+                "host": hostname,
+                "interfaces": [
+                        {
+                            "type": 1,
+                            "main": 1,
+                            "useip": 1,
+                            "ip": hostip,
+                            "dns": "",
+                            "port": "10050"
+                        }
+                    ],
                 "groups": group_list,
                 "templates": template_list,
                 }
@@ -292,19 +316,19 @@ class zabbix_api:
         ])
         return self.__generate_return("OK","delete host:[%s] id:[%s] OK"%(hostname,response["hostids"][0]))
     # hostgroup
-    def hostgroup_get(self, hostgroupName=''): 
+    def hostgroup_get(self, hostgroupName=''):
         '''
         get hostgroup list
         [eg1]#zabbix_api hostgroup_get
         [eg1]#zabbix_api hostgroup_get "Templates"
         '''
         response=self.zapi.hostgroup.get({
-                                     "output": ["groupid","name"], 
-                                     "filter": { 
-                                                "name": hostgroupName 
-                                                } 
-                                     }) 
-         
+                                     "output": ["groupid","name"],
+                                     "filter": {
+                                                "name": hostgroupName
+                                                }
+                                     })
+
         if len(response) == 0:
             return 0
         output = []
@@ -313,10 +337,10 @@ class zabbix_api:
             if  len(hostgroupName)==0:
                 output.append([group["groupid"],group["name"]])
             else:
-                self.hostgroupID = group['groupid'] 
-                return group['groupid'] 
+                self.hostgroupID = group['groupid']
+                return group['groupid']
         self.__generate_output(output)
-    def dev_hosts_info(self): 
+    def dev_hosts_info(self):
         '''
         '''
         # 二次开发修改列表
@@ -327,7 +351,7 @@ class zabbix_api:
         output = []
         output.append(["hostname","ip","CPU","mem","available"])
         available={"0":"Unknown","1":Color('{autobggreen}available{/autobggreen}'),"2":Color('{autobgred}Unavailable{/autobgred}')}
-        
+
         # 返回信息使用
         return_info = []
         for host in host_list:
@@ -345,7 +369,7 @@ class zabbix_api:
                                          "filter":{
                                              "key_": key_list
                                              }
-                                         }) 
+                                         })
             # 返回信息使用
             host_info = {}
             ## 每个 item 返回值{u'itemid': u'23889', u'lastvalue': u'16748281856', u'key_': u'vm.memory.size[total]', u'name': u'Total memory'}
@@ -386,7 +410,7 @@ class zabbix_api:
         ################################### 作为终端输出显示
         self.__generate_output(output)
         return return_info
-    def dev_hosts_device(self,mountdir = "/"): 
+    def dev_hosts_device(self,mountdir = "/"):
         '''
         [eg1]#zabbix_api dev_hosts_device "/home"
         [eg2]#zabbix_api dev_hosts_device
@@ -395,7 +419,7 @@ class zabbix_api:
         output = []
         output.append(["hostname","ip","use_p","total","use","available"])
         available={"0":"Unknown","1":Color('{autobggreen}available{/autobggreen}'),"2":Color('{autobgred}Unavailable{/autobgred}')}
-        
+
         # 返回信息使用
         return_info = []
         for host in host_list:
@@ -413,7 +437,7 @@ class zabbix_api:
                                          "filter":{
                                              "key_":["vfs.fs.size[%s,total]" % mountdir,"vfs.fs.size[%s,used]" % mountdir,"vfs.fs.size[%s,pfree]" % mountdir]
                                              }
-                                         }) 
+                                         })
             # 返回信息使用
             host_dev = {}
             if len(response) == 0:
@@ -430,7 +454,7 @@ class zabbix_api:
                 mountdir_free_p = response[0]["lastvalue"]
                 mountdir_total = int(response[1]["lastvalue"])
                 mountdir_use = int(response[2]["lastvalue"])
-                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1 
+                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1
                 mountdir_total=self.__ByteFormat(mountdir_total)
                 mountdir_use=self.__ByteFormat(mountdir_use)
                 mountdir_use_p =float('%0.2f'%( 100.0 - float(mountdir_free_p)))
@@ -450,18 +474,18 @@ class zabbix_api:
         self.__generate_output(output)
         # print(return_info)
         return return_info
-    def __hostgroup_get_name(self,groupid): 
+    def __hostgroup_get_name(self,groupid):
         '''
         内部函数
         根据hostgroup id 获得主机群组的 name
         '''
         response=self.zapi.hostgroup.get({
-                                    "output": "extend", 
+                                    "output": "extend",
                                     "groupids":groupid
                                     })
         if len(response) == 0:
             return 0
-        return response[0]['name'] 
+        return response[0]['name']
     def hostgroup_create(self,hostgroupName):
         '''
         create a hostgroup
@@ -475,7 +499,7 @@ class zabbix_api:
         if len(response) == 0:
             return 0
         return self.__generate_return("OK","create hostgroup [%s] OK"% response['groupids'][0])
-    def application_get(self, host_ID,app_name=""): 
+    def application_get(self, host_ID,app_name=""):
         '''
         return a item list
         [eg1]#zabbix_api application_get 10084
@@ -489,9 +513,9 @@ class zabbix_api:
                                      "output":"extend",
                                      "hostids":host_ID,
                                      #"selectItems":["itemid"]
-                                     "filter":{"name":app_name} 
-                                     }) 
-         
+                                     "filter":{"name":app_name}
+                                     })
+
         if len(response) == 0:
             return 0
         output=[]
@@ -505,7 +529,7 @@ class zabbix_api:
                 return application['applicationid']
         self.__generate_output(output)
         return 0
-    def __appitem_get(self,app_id): 
+    def __appitem_get(self,app_id):
         '''
         获取某个 applicationid 的所有 item 列表,和 item_get 类似
         return a item list
@@ -517,8 +541,8 @@ class zabbix_api:
         response=self.zapi.item.get({
                                      "output":"extend",
                                      "applicationids":app_id,
-                                     }) 
-         
+                                     })
+
         if len(response) == 0:
             return 0
         output=[]
@@ -526,7 +550,7 @@ class zabbix_api:
         output.append(["itemid","name","key_","update_time","value_type","history","units"])
         for item in response:
             #########################################
-            # alt the $1 and $2 
+            # alt the $1 and $2
             #########################################
             position = item['key_'].find('[')+1
             if position:
@@ -541,7 +565,7 @@ class zabbix_api:
             return output[1:]
         else:
             return 0
-    def item_get(self, host_ID,itemName=''): 
+    def item_get(self, host_ID,itemName=''):
         '''
         return a item list
         [eg1]#zabbix_api item_get 10084
@@ -556,8 +580,8 @@ class zabbix_api:
                                      "output":['itemid','name','key_','delay','value_type','history','units'],
                                      "hostids":host_ID,
                                      "monitored":True,
-                                     }) 
-         
+                                     })
+
         if len(response) == 0:
             return 0
         output=[]
@@ -565,7 +589,7 @@ class zabbix_api:
         output.append(["itemid","name","key_","update_time","value_type","history","units"])
         for item in response:
             #########################################
-            # alt the $1 and $2 
+            # alt the $1 and $2
             #########################################
             position = item['key_'].find('[')+1
             if position:
@@ -587,7 +611,7 @@ class zabbix_api:
             return output[1:]
         else:
             return 0
-    def item_list(self, host_ID,application): 
+    def item_list(self, host_ID,application):
         '''
         return a item list
         [eg]#zabbix_api item_list 10084 "CPU,Zabbix agent"
@@ -596,12 +620,12 @@ class zabbix_api:
         # list_format
         # [item['itemid'],item['name'],item['key_'],item['delay'],item['value_type']],item['units']
 
-        
+
         applicationids=[]
         applicationids[:]=[]
         for i in application.split(','):
             try:
-                int(i)  
+                int(i)
                 applicationid = i
             except:
                 applicationid = self.application_get(host_ID,i)
@@ -615,7 +639,7 @@ class zabbix_api:
                                      "hostids":host_ID,
                                      "applicationids":applicationids,
                                      "monitored":True
-                                     }) 
+                                     })
         if len(response) == 0:
             return 0
         output=[]
@@ -625,7 +649,7 @@ class zabbix_api:
         output.append(["itemid","name","key_","update_time","value_type","history","units"])
         for item in response:
             #########################################
-            # alt the $1 and $2 
+            # alt the $1 and $2
             #########################################
             position = item['key_'].find('[')+1
             if position:
@@ -641,7 +665,7 @@ class zabbix_api:
             return itemkey_list
         else:
             return 0
-    def __item_get2(self, host_ID,key_name): 
+    def __item_get2(self, host_ID,key_name):
         '''
         return a item list
         [eg1]#zabbix_api item_get 10084
@@ -656,15 +680,15 @@ class zabbix_api:
                                      "output":"extend",
                                      "hostids":host_ID,
                                      "monitored":True,
-                                     }) 
-         
+                                     })
+
         if len(response) == 0:
             return 0
         output=[]
         output[:]=[]
         for item in response:
             #########################################
-            # alt the $1 and $2 
+            # alt the $1 and $2
             #########################################
             position = item['key_'].find('[')+1
             if position:
@@ -680,21 +704,21 @@ class zabbix_api:
             return output
         else:
             return 0
-    def __item_search(self,item_ID=''): 
+    def __item_search(self,item_ID=''):
         '''
         内部函数
-        根据 某个item_ID 确定 item 的value_type 
+        根据 某个item_ID 确定 item 的value_type
         '''
         response=self.zapi.item.get({
                                      "output":"extend",
                                      "itemids":item_ID,
-                                     }) 
-         
+                                     })
+
         if len(response) == 0:
             return 0
         return response[0]['value_type']
     # history
-    def history_get(self,item_ID,date_from,date_till): 
+    def history_get(self,item_ID,date_from,date_till):
         '''
         return history of item
         [eg1]#zabbix_api history_get 23296 "2016-08-01 00:00:00" "2016-09-01 00:00:00"
@@ -710,8 +734,8 @@ class zabbix_api:
         time_till = int(time.mktime(endTime))
         history_type=self.__item_search(item_ID)
         self.__history_get(history_type,item_ID,time_from,time_till)
-            
-    def __history_get(self,history,item_ID,time_from,time_till): 
+
+    def __history_get(self,history,item_ID,time_from,time_till):
         '''
         内部函数
         输出某个 item  特定时间段中的 history 值
@@ -736,7 +760,7 @@ class zabbix_api:
             timeArray = time.localtime(int(history_info['clock']))
             otherStyleTime = time.strftime("%Y-%m-%d %H:%M:%S", timeArray)
             print(item_ID,history_info['value'],otherStyleTime)
-    def __get_select_condition_info(self): 
+    def __get_select_condition_info(self):
         '''
         内部函数
         获得特定条件的主机信息
@@ -757,7 +781,7 @@ class zabbix_api:
                         output = hostgroup_name + output
                     else:
                         output = hostgroup_name+u"、"+output
-                output = u"主机组:" + output 
+                output = u"主机组:" + output
             else:
                 output = u"主机组:" + u"无"
             if self.__host_id__:
@@ -768,21 +792,21 @@ class zabbix_api:
                         output = host_info[2]+"\n"+output
                     else:
                         output = host_info[2]+u"、"+output
-                output = u"主机:" + output 
+                output = u"主机:" + output
             else:
                 output = u"主机:" + u"无" + "\n" + output
             return output
         else:
             return 0
     ##
-    # @brief report 
+    # @brief report
     #
     # @param itemName
     # @param date_from
     # @param date_till
-    # @param export_xls 
+    # @param export_xls
     #
-    # @return 
+    # @return
     def __ByteFormat(self,size):
         if size > math.pow(1024,3):
             return '%.2f G' % (size/math.pow(1024,3))
@@ -792,7 +816,7 @@ class zabbix_api:
             return '%.2f K' % (size/math.pow(1024,1))
         return size
 
-    def _report(self,itemName,date_from,date_till,export_xls,select_condition): 
+    def _report(self,itemName,date_from,date_till,export_xls,select_condition):
 
         units_list = ["B","vps","bps","sps"]
 
@@ -801,7 +825,7 @@ class zabbix_api:
         dateFormat = "%Y-%m-%d %H:%M:%S"
         #dateFormat = "%Y-%m-%d"
         report_output=[]
-        
+
         try:
             startTime =  time.strptime(date_from,dateFormat)
             endTime =  time.strptime(date_till,dateFormat)
@@ -812,7 +836,7 @@ class zabbix_api:
         except:
             err_msg("时间格式 ['2016-05-01 00:00:00'] ['2016-06-01 00:00:00']")
 
-        
+
         time_from = int(time.mktime(startTime))+1
         time_till = int(time.mktime(endTime))
         if time_from > time_till:
@@ -823,7 +847,7 @@ class zabbix_api:
             xls_range = u"ALL"
         print(xls_range)
         host_list = self._hosts_get()
-        for host_info in host_list: 
+        for host_info in host_list:
             ######################################################
             itemid_all_list = self.item_get(host_info[0],itemName)
             ######################################################
@@ -839,7 +863,7 @@ class zabbix_api:
                 debug_msg="[report]itemid:%s"%itemid
                 self.logger.debug(debug_msg)
 
-                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1 
+                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1
                 if value_type=="3" or value_type=="0":
                     report_min,report_max,report_avg = self.__trend_get(itemid,time_from,time_till)
                     if value_type=="3":
@@ -881,7 +905,7 @@ class zabbix_api:
             for report_item in report_output:
                 for report_item_i in report_item:
                     print(report_item_i,'\t',end=" ")
-                print() 
+                print()
         if export_xls["xls"] == "ON":
             xlswriter = XLSWriter.XLSWriter(export_xls["xls_name"])
             # title
@@ -892,17 +916,17 @@ class zabbix_api:
             # 报告周期
             xlswriter.add_header(u"报告周期:"+title_table,6,sheet_name=sheetName)
             xlswriter.setcol_width([10,50,35,10,10,10],sheet_name=sheetName)
-            
+
             ## 范围
             xlswriter.add_remark(u"范围:"+xls_range,6,sheet_name=sheetName)
             xlswriter.writerow(["hostid","name","itemName","min","max","avg"],sheet_name=sheetName,border=True,pattern_n=22)
-            
+
             ## 输出内容
             for report_item in report_output:
                 xlswriter.writerow(report_item,sheet_name=sheetName,border=True)
             xlswriter.save()
         return 0
-    def _report_app(self,appName,date_from,date_till,export_xls,select_condition): 
+    def _report_app(self,appName,date_from,date_till,export_xls,select_condition):
 
         units_list = ["B","vps","bps","sps"]
 
@@ -911,7 +935,7 @@ class zabbix_api:
         dateFormat = "%Y-%m-%d %H:%M:%S"
         #dateFormat = "%Y-%m-%d"
         report_output=[]
-        
+
         try:
             startTime =  time.strptime(date_from,dateFormat)
             endTime =  time.strptime(date_till,dateFormat)
@@ -922,7 +946,7 @@ class zabbix_api:
         except:
             err_msg("时间格式 ['2016-05-01 00:00:00'] ['2016-06-01 00:00:00']")
 
-        
+
         time_from = int(time.mktime(startTime))+1
         time_till = int(time.mktime(endTime))
         if time_from > time_till:
@@ -933,7 +957,7 @@ class zabbix_api:
             xls_range = u"ALL"
         print(xls_range)
         host_list = self._hosts_get()
-        for host_info in host_list: 
+        for host_info in host_list:
             ######################################################
             applicationid = self.application_get(host_info[0],appName)
             # 如果某个 host 没有此 application 则跳过
@@ -953,7 +977,7 @@ class zabbix_api:
                 debug_msg="[report]itemid:%s"%itemid
                 self.logger.debug(debug_msg)
 
-                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1 
+                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1
                 if value_type=="3" or value_type=="0":
                     report_min,report_max,report_avg = self.__trend_get(itemid,time_from,time_till)
                     if value_type=="3":
@@ -994,7 +1018,7 @@ class zabbix_api:
             for report_item in report_output:
                 for report_item_i in report_item:
                     print(report_item_i,'\t',end=" ")
-                print() 
+                print()
         if export_xls["xls"] == "ON":
             xlswriter = XLSWriter.XLSWriter(export_xls["xls_name"])
             # title
@@ -1005,17 +1029,17 @@ class zabbix_api:
             # 报告周期
             xlswriter.add_header(u"报告周期:"+title_table,6,sheet_name=sheetName)
             xlswriter.setcol_width([10,50,35,10,10,10],sheet_name=sheetName)
-            
+
             ## 范围
             xlswriter.add_remark(u"范围:"+xls_range,6,sheet_name=sheetName)
             xlswriter.writerow(["hostid","name","itemName","min","max","avg"],sheet_name=sheetName,border=True,pattern_n=22)
-            
+
             ## 输出内容
             for report_item in report_output:
                 xlswriter.writerow(report_item,sheet_name=sheetName,border=True)
             xlswriter.save()
         return 0
-    def _report_key(self,item_key,date_from,date_till,export_xls,select_condition): 
+    def _report_key(self,item_key,date_from,date_till,export_xls,select_condition):
 
         units_list = ["B","vps","bps","sps"]
 
@@ -1024,7 +1048,7 @@ class zabbix_api:
         dateFormat = "%Y-%m-%d %H:%M:%S"
         #dateFormat = "%Y-%m-%d"
         report_output=[]
-        
+
         try:
             startTime =  time.strptime(date_from,dateFormat)
             endTime =  time.strptime(date_till,dateFormat)
@@ -1035,7 +1059,7 @@ class zabbix_api:
         except:
             err_msg("时间格式 ['2016-05-01 00:00:00'] ['2016-06-01 00:00:00']")
 
-        
+
         time_from = int(time.mktime(startTime))+1
         time_till = int(time.mktime(endTime))
         if time_from > time_till:
@@ -1046,7 +1070,7 @@ class zabbix_api:
             xls_range = u"ALL"
         print(xls_range)
         host_list = self._hosts_get()
-        for host_info in host_list: 
+        for host_info in host_list:
             itemid_all_list = self.__item_get2(host_info[0],item_key)
             ######################################################
             if itemid_all_list == 0:
@@ -1061,7 +1085,7 @@ class zabbix_api:
                 debug_msg="[report]itemid:%s"%itemid
                 self.logger.debug(debug_msg)
 
-                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1 
+                # 检测是 item 类型是否是整数或者浮点数，不是则直接返回-1
                 if value_type=="3" or value_type=="0":
                     report_min,report_max,report_avg = self.__trend_get(itemid,time_from,time_till)
                     if value_type=="3":
@@ -1102,7 +1126,7 @@ class zabbix_api:
             for report_item in report_output:
                 for report_item_i in report_item:
                     print(report_item_i,'\t',end=" ")
-                print() 
+                print()
         if export_xls["xls"] == "ON":
             xlswriter = XLSWriter.XLSWriter(export_xls["xls_name"])
             # title
@@ -1113,17 +1137,17 @@ class zabbix_api:
             # 报告周期
             xlswriter.add_header(u"报告周期:"+title_table,6,sheet_name=sheetName)
             xlswriter.setcol_width([10,50,35,10,10,10],sheet_name=sheetName)
-            
+
             ## 范围
             xlswriter.add_remark(u"范围:"+xls_range,6,sheet_name=sheetName)
             xlswriter.writerow(["hostid","name","itemName","min","max","avg"],sheet_name=sheetName,border=True,pattern_n=22)
-            
+
             ## 输出内容
             for report_item in report_output:
                 xlswriter.writerow(report_item,sheet_name=sheetName,border=True)
             xlswriter.save()
         return 0
-    def __agent_ping(self,item_ID='',time_from='',time_till=''): 
+    def __agent_ping(self,item_ID='',time_from='',time_till=''):
         '''
         此函数为 report_available 引用函数
         '''
@@ -1151,7 +1175,7 @@ class zabbix_api:
             hour_num_string = unicodedata.normalize('NFKD',result_info['num']).encode('ascii','ignore')
             hour_num=eval(hour_num_string)
             sum_num_value = sum_num_value + hour_num
-            
+
             hour_avg_string = unicodedata.normalize('NFKD',result_info['value_avg']).encode('ascii','ignore')
             hour_avg=eval(hour_avg_string)
             sum_avg_value = sum_avg_value + hour_avg
@@ -1167,7 +1191,7 @@ class zabbix_api:
         return diff_hour
     def _set_sepsign(self,sepsign=None):
         self.sepsign = sepsign
-    def _report_available(self,itemName,date_from,date_till,export_xls,select_condition,value_type=False): 
+    def _report_available(self,itemName,date_from,date_till,export_xls,select_condition,value_type=False):
         # 设置为调用的函数不输出
         self.output = False
 
@@ -1195,7 +1219,7 @@ class zabbix_api:
             xls_range = u"ALL"
         print(xls_range)
         host_list = self._hosts_get()
-        for host_info in host_list: 
+        for host_info in host_list:
             itemid_all_list = self.item_get(host_info[0],itemName)
             if itemid_all_list == 0:
                 continue
@@ -1204,13 +1228,13 @@ class zabbix_api:
                 item_name=itemid_sub_list[1]
                 item_key=itemid_sub_list[2]
                 item_update_time=itemid_sub_list[3]
-                
+
                 check_time=int(item_update_time)
                 if not check_time:
                     check_time = 60
                 hour_check_num = int(3600/check_time)
                 trend_sum,sum_num_value,sum_avg_value = self.__agent_ping(itemid,time_from,time_till)
-                
+
                 if (sum_avg_value > 0) and (trend_sum > 0):
                     # 分子为trend_avg平均值之和
                     sum_avg_value_p = float(sum_avg_value*100)
@@ -1260,7 +1284,7 @@ class zabbix_api:
             for report_item in report_output:
                 for report_item_i in report_item:
                     print(report_item_i,'\t',end=" ")
-                print() 
+                print()
         if export_xls["xls"] == "ON":
             xlswriter = XLSWriter.XLSWriter(export_xls["xls_name"])
             # title
@@ -1271,23 +1295,23 @@ class zabbix_api:
             # 报告周期
             xlswriter.add_header(u"报告周期:"+title_table,6,sheet_name=sheetName)
             xlswriter.setcol_width([10,50,35,10,10,10],sheet_name=sheetName)
-            
+
             ## 范围
             xlswriter.add_remark(u"范围:"+xls_range,6,sheet_name=sheetName)
             xlswriter.writerow(["hostid",u"资源类型","itemName",u"期望值(%)",u"平均值(%)",u"差值(%)"],sheet_name=sheetName,border=True,pattern_n=22)
-            
+
             ## 输出内容
             for report_item in report_output:
                 xlswriter.writerow(report_item,sheet_name=sheetName,border=True)
             xlswriter.save()
         return 0
     ##
-    # @return 
-    def _report_available2(self,date_from,date_till,export_xls,select_condition,itemkey_list=''): 
+    # @return
+    def _report_available2(self,date_from,date_till,export_xls,select_condition,itemkey_list=''):
         dateFormat = "%Y-%m-%d %H:%M:%S"
         #dateFormat = "%Y-%m-%d"
         report_output=[]
-        
+
         try:
             startTime =  time.strptime(date_from,dateFormat)
             endTime =  time.strptime(date_till,dateFormat)
@@ -1309,7 +1333,7 @@ class zabbix_api:
             xls_range = u"ALL"
         print(xls_range)
         host_list = self._hosts_get()
-        for host_info in host_list: 
+        for host_info in host_list:
             # host_info[1]是host_name,host_info[2]是name
             hostid = host_info[0]
             hostname = host_info[2]
@@ -1355,7 +1379,7 @@ class zabbix_api:
             for report_item in report_output:
                 for report_item_i in report_item:
                     print(report_item_i,'\t',end=" ")
-                print() 
+                print()
         if export_xls["xls"] == "ON":
             xlswriter = XLSWriter.XLSWriter(export_xls["xls_name"])
             # title
@@ -1366,19 +1390,19 @@ class zabbix_api:
             # 报告周期
             xlswriter.add_header(u"报告周期:"+title_table,6,sheet_name=sheetName)
             xlswriter.setcol_width([15,15,50,10,10,15],sheet_name=sheetName)
-            
+
             ## 范围
             xlswriter.add_remark(u"范围:"+xls_range,6,sheet_name=sheetName)
             xlswriter.writerow(["hostname","ip","name","Problems","OK","prevvalue"],sheet_name=sheetName,border=True,pattern_n=22)
-            
+
             ## 输出内容
             for report_item in report_output:
                 xlswriter.writerow(report_item,sheet_name=sheetName,border=True)
             xlswriter.save()
         return 0
     ##
-    # @return 
-    def _report_flow(self,date_from,date_till,export_xls,hosts_file="./switch"): 
+    # @return
+    def _report_flow(self,date_from,date_till,export_xls,hosts_file="./switch"):
         host_all_info = config.read_config(hosts_file)
         dateFormat = "%Y-%m-%d %H:%M:%S"
         report_output=[]
@@ -1399,7 +1423,7 @@ class zabbix_api:
 
         # 获取需要输出报表信息的host_list
         num=1
-        for host_info in host_all_info: 
+        for host_info in host_all_info:
             # host_info (description,hostid,ethernet_port,default_speed)
             description = host_info[0]
             hostid = host_info[1]
@@ -1409,7 +1433,7 @@ class zabbix_api:
             host_name=host_name_list[0][2]
             ethernet_port = host_info[2]
             default_speed = host_info[3]
-            
+
             item_ethernet_port_in = "Incoming network traffic on " + ethernet_port
             item_ethernet_port_out = "Outgoing network traffic on " + ethernet_port
 
@@ -1513,7 +1537,7 @@ class zabbix_api:
                     bandwidth,\
                     0])
             num=num+1
-                    
+
         if self.output_sort:
             # 排序，如果是false，是升序
             # 如果是true，是降序
@@ -1584,16 +1608,16 @@ class zabbix_api:
                                 "output":"extend",
                                 "time_from":time_from,
                                 "time_till":time_till
-                                }) 
-         
+                                })
+
         if len(response) == 0:
             print("no alert")
             return 0
-        for alert in response:      
+        for alert in response:
             timeArray = time.localtime(int(alert['clock']))
             otherStyleTime = time.strftime("%Y-%m-%d %H:%M:%S", timeArray)
             print(alert['alertid'],otherStyleTime,alert['sendto'],alert['subject'],alert['status'])
-    def __trend_get(self,itemID='',time_from='',time_till=''): 
+    def __trend_get(self,itemID='',time_from='',time_till=''):
         '''
         内部函数
         输出一段时间内的某个item的最大值、平均值、最小值
@@ -1624,7 +1648,7 @@ class zabbix_api:
             return 0.0,0.0,0.0
         for result_info in response:
             trend_min_data.append(result_info['value_min'])
-                
+
             trend_max_data.append(result_info['value_max'])
             trend_avg_data.append(result_info['value_avg'])
         trend_min_data_all=my_sort.Stats(trend_min_data)
@@ -1633,10 +1657,10 @@ class zabbix_api:
         trend_min=trend_min_data_all.min()
         trend_max=trend_max_data_all.max()
         trend_avg=float('%0.4f'% trend_avg_data_all.avg())
-        
+
         return (trend_min,trend_max,trend_avg)
     # template
-    def template_get(self,identifier=''): 
+    def template_get(self,identifier=''):
         '''
         Look up a template list by name or ID number
         [eg1]#zabbix_api template_get
@@ -1644,8 +1668,8 @@ class zabbix_api:
         [eg3-Internal call]#zabbix_api template_get 10001
         '''
         if identifier:
-            try:                 
-                int(identifier)  
+            try:
+                int(identifier)
                 params = {"output":["templateid","name"],"templateids":[int(identifier)]}
             except:
                 params = {"output":["templateid","name"],"filter":{"name":identifier}}
@@ -1656,11 +1680,11 @@ class zabbix_api:
             output = []
             output[:] = []
             output.append(["id","template"])
-            for template in response: 
+            for template in response:
                 output.append([template['templateid'],template['name']])
             self.__generate_output(output)
             return 0
-    def template_import(self,template_path): 
+    def template_import(self,template_path):
         '''
         import template
         [eg]#zabbix_api template_import template_path
@@ -1724,7 +1748,7 @@ class zabbix_api:
             },
         }
         response = self.zapi.configuration.import_({
-                "format": "xml", 
+                "format": "xml",
                 "rules": rules,
                 "source":template
             })
@@ -1732,27 +1756,27 @@ class zabbix_api:
             return self.__generate_return("OK","import template [%s] OK"%template_path)
         else:
             return self.__generate_return("ERR","import template [%s] ERR"%template_path)
-    def user_get(self,userName=''): 
+    def user_get(self,userName=''):
         '''
         get user list
         [eg1]#zabbix_api user_get
         '''
         response = self.zapi.user.get({
             "output": "extend",
-            "filter":{"alias":userName} 
+            "filter":{"alias":userName}
             })
         if len(response) == 0:
             return 0
         output = []
         output[:]=[]
         output.append(["userid","alias","name","url"])
-        for user in response:      
+        for user in response:
             if len(userName)==0:
                 output.append([user['userid'],user['alias'],user['name'],user['url']])
             else:
                 return user['userid']
         self.__generate_output(output)
-    def user_create(self, userName,userPassword,usergroupName,mediaName,email): 
+    def user_create(self, userName,userPassword,usergroupName,mediaName,email):
         '''
         create a user
         [eg1]#zabbix_api user_create "ceshi_user" "123456" "ceshi_usergroup" "alerts" "meetbill@163.com"
@@ -1772,7 +1796,7 @@ class zabbix_api:
             "usrgrps": [
                 {
                     "usrgrpid": usergroupID
-                }      
+                }
             ],
             "user_medias": [
                 {
@@ -1785,7 +1809,7 @@ class zabbix_api:
             ]
         })
         return self.__generate_return("OK","create user:[%s] id:[%s] OK"%(userName,response["userids"][0]))
-    def user_delete(self,userName): 
+    def user_delete(self,userName):
         '''
         Remove user
         [eg1]#zabbix_api user_delete "ceshi_user"
@@ -1794,10 +1818,10 @@ class zabbix_api:
         if not userid:
             return self.__generate_return("ERR","user [%s] is not exist"%userName)
         response = self.zapi.user.delete([
-            userid    
+            userid
         ])
         return self.__generate_return("OK","delete user:[%s] id:[%s] OK"%(userName,response["userids"][0]))
-    def usergroup_get(self,usergroupName=''): 
+    def usergroup_get(self,usergroupName=''):
         '''
         return usergroup list
         [eg1]#zabbix_api usergroup_get
@@ -1805,14 +1829,14 @@ class zabbix_api:
         response = self.zapi.usergroup.get({
             "output": "extend",
             "selectUsers":["alias"],
-            "filter":{"name":usergroupName} 
+            "filter":{"name":usergroupName}
         })
         if len(response) == 0:
             return (0,0)
         output = []
         output[:] = []
         output.append(["usrgrpid","name","gui_access","users_status","users"])
-        for user_group in response:      
+        for user_group in response:
             if len(usergroupName)==0:
                 user_info=""
                 for user in user_group["users"]:
@@ -1822,7 +1846,7 @@ class zabbix_api:
                 return (user_group['usrgrpid'],len(user_group["users"]))
         self.__generate_output(output)
         return 0
-    def usergroup_create(self, usergroupName,hostgroupName): 
+    def usergroup_create(self, usergroupName,hostgroupName):
         '''
         Create a usergroup
         [eg1]#zabbix_api usergroup_create "ceshi_usergroup" "Linux servers"
@@ -1834,7 +1858,7 @@ class zabbix_api:
             return self.__generate_return("ERR","hostgroup [%s] is not exist"%hostgroupName)
         response = self.zapi.usergroup.create({
             "name":usergroupName,
-            "rights":{ 
+            "rights":{
                 "permission": 3,
                 "id":hostgroupID
             }
@@ -1854,7 +1878,7 @@ class zabbix_api:
             return self.__generate_return("ERR","usergroup [%s] have users"%usergroupName)
         response=self.zapi.usergroup.delete([usergroupID])
         return self.__generate_return("OK","delete usergroup [%s] OK"%usergroupName)
-    def mediatype_get(self,mediatypeName=''): 
+    def mediatype_get(self,mediatypeName=''):
         '''
         return a mediatype list
         [eg1]#zabbix_api mediatype_get
@@ -1863,7 +1887,7 @@ class zabbix_api:
             {
                 "output": "extend",
                 "selectUsers" : ["alias"],
-                "filter":{"description":mediatypeName} 
+                "filter":{"description":mediatypeName}
             }
         )
 
@@ -1872,7 +1896,7 @@ class zabbix_api:
         output = []
         output[:] = []
         output.append(["mediatypeid","type","description","exec_path","users"])
-        for mediatype in response:      
+        for mediatype in response:
             if len(mediatypeName):
                 return (mediatype['mediatypeid'],len(mediatype["users"]))
             else:
@@ -1882,21 +1906,21 @@ class zabbix_api:
                 output.append([mediatype['mediatypeid'],mediatype['type'],mediatype['description'],mediatype['exec_path'],user_info])
         self.__generate_output(output)
         return 0
-    def mediatype_create(self, mediatypeName,script_name): 
+    def mediatype_create(self, mediatypeName,script_name):
         '''
         create a mediatype[script]
         [eg1]#zabbix_api mediatype_create "alerts" "alerts.py"
         '''
 
-        # mediatypeType Possible values: 
-        # 0 - email; 
-        # 1 - script; 
-        # 2 - SMS; 
-        # 3 - Jabber; 
+        # mediatypeType Possible values:
+        # 0 - email;
+        # 1 - script;
+        # 2 - SMS;
+        # 3 - Jabber;
         if self.mediatype_get(mediatypeName)[0]:
             return self.__generate_return("ERR","mediatype [%s] is exist"%mediatypeName)
         response = self.zapi.mediatype.create(
-            { 
+            {
                 "description": mediatypeName,
                 "type": 1,
                 "exec_path": script_name,
@@ -1920,7 +1944,7 @@ class zabbix_api:
             ]
         )
         return self.__generate_return("OK","delete mediatype:[%s] OK"%mediatypeName)
-    def drule_get(self,druleName=''): 
+    def drule_get(self,druleName=''):
         """
         get drule(discoveryRules)
         """
@@ -1934,14 +1958,14 @@ class zabbix_api:
         output[:] = []
         output.append(["druleid","name","iprange","status"])
         status={"0":Color('{autobggreen}Enabled{/autobggreen}'),"1":Color('{autobgred}Disabled{/autobgred}')}
-        for drule in response:      
+        for drule in response:
             if len(druleName)==0:
                 output.append([drule['druleid'],drule['name'],drule['iprange'],status[drule['status']]])
             else:
                 return drule['druleid']
         self.__generate_output(output)
         return 0
-    def drule_create(self, druleName,iprange): 
+    def drule_create(self, druleName,iprange):
         if self.drule_get(druleName):
             return self.__generate_return("ERR","druleName [%s] is exist"%druleName)
 
@@ -1961,7 +1985,7 @@ class zabbix_api:
             return 0
         else:
             return self.__generate_return("OK","druleName [%s] is create OK"%druleName)
-    def action_get(self,actionName=''): 
+    def action_get(self,actionName=''):
         '''
         rerun action list
         [eg1]#zabbix_api action_get
@@ -1975,7 +1999,7 @@ class zabbix_api:
                 "output": "extend",
                 "filter":{
                     "name":actionName,
-                } 
+                }
             })
         if len(response) == 0:
             return 0
@@ -1984,7 +2008,7 @@ class zabbix_api:
         output.append(["actionid","name","eventsource","status"])
         status={"0":Color('{autobggreen}Enabled{/autobggreen}'),"1":Color('{autobgred}Disabled{/autobgred}')}
         eventsource={"0":"triggers","1":"discovery","2":"registration","3":"internal"}
-        for action in response:      
+        for action in response:
             if len(actionName)==0:
                 self.logger.info(str(action))
                 output.append([action['actionid'],action['name'],eventsource[action['eventsource']],status[action['status']]])
@@ -1993,7 +2017,7 @@ class zabbix_api:
                 return action['actionid']
         self.__generate_output(output)
         return 0
-    def action_autoreg_create(self, actionName,metaname,hostgroupName): 
+    def action_autoreg_create(self, actionName,metaname,hostgroupName):
         '''
         create autoreg action
         [eg1]#zabbix_api action_autoreg_create "ceshi_action" "Linux" "Linux servers"
@@ -2064,7 +2088,7 @@ class zabbix_api:
             }
         self.zapi.action.create(data_params)
         return self.__generate_return("OK","action [%s] is create OK"%actionName)
-    def action_trigger_create(self, actionName,usergroupName,mediatypeName): 
+    def action_trigger_create(self, actionName,usergroupName,mediatypeName):
         '''
         create trigger action
         [eg1]#zabbix_api action_trigger_create "ceshi_trigger_action" "op" "alerts"
@@ -2123,7 +2147,7 @@ class zabbix_api:
             }
         self.zapi.action.create(data_params)
         return self.__generate_return("OK","action [%s] is create OK"%actionName)
-    def action_discovery_create(self, actionName,hostgroupName): 
+    def action_discovery_create(self, actionName,hostgroupName):
         '''
         create autoreg action
         [eg1]#zabbix_api action_discovery_create "ceshi_action" "Linux servers"
@@ -2197,7 +2221,7 @@ class zabbix_api:
         }
         self.zapi.action.create(data_params)
         return self.__generate_return("OK","action [%s] is create OK"%actionName)
-    def mysql_quota(self): 
+    def mysql_quota(self):
         # 设置为调用的函数不输出
         self.output = False
 
@@ -2207,7 +2231,7 @@ class zabbix_api:
         sum_trends_quota = 0
         sum_event_quota = 0
         sum_item_num = 0
-        for host_info in host_list: 
+        for host_info in host_list:
             # 获取host中的item
             itemid_all_list = self.item_get(host_info[0])
             if itemid_all_list == 0:
@@ -2221,13 +2245,13 @@ class zabbix_api:
                     item_update_time = 60
                 history_quota = item_history * 24 * 3600 * 50 / item_update_time
                 sum_history_quota = sum_history_quota + history_quota
-                
+
         sum_trends_quota = 365 * sum_item_num * 24 * 128
         sum_event_quota = 365 * sum_item_num * 24 * 130 * 5
         mysql_quota = (sum_history_quota + sum_trends_quota + sum_event_quota)/1000000000.0
         print("item_num:%d Pre-estimated use:%fG"%(sum_item_num,mysql_quota))
         return 0
-    def __triggers_get(self, host_ID=''): 
+    def __triggers_get(self, host_ID=''):
         '''
         内部函数
         输出某个 host 的所有 trigger_get
@@ -2245,19 +2269,19 @@ class zabbix_api:
             #"selectItems":"extend",
             "selectItems":["key_","prevvalue","units","value_type"],
             "expandDescription":"1"
-            } 
+            }
         response=self.zapi.trigger.get(data_params)
         if len(response) == 0:
             return 0
         for trigger in response:
             all_trigger_list.append((trigger["triggerid"],trigger["description"],trigger["items"][0]["key_"],trigger["items"][0]["prevvalue"],trigger["items"][0]["units"]))
         return all_trigger_list
-    def issues(self): 
+    def issues(self):
         '''
         output issues list
         [eg1]#zabbix_api issues
         '''
-        params = { 
+        params = {
                "output":"extend",
                "expandDescription":1,
                "only_true":1,
@@ -2287,7 +2311,7 @@ class zabbix_api:
             issues_info[trigger["hosts"][0]["name"]].append(trigger["items"][0]["key_"])
         self.__generate_output(output)
         return issues_info
-    def __calculate_availability(self, triggerid='',time_from='',time_till=''): 
+    def __calculate_availability(self, triggerid='',time_from='',time_till=''):
         '''
         The method allows to retrieve events according to the given parameters.
         用于可用性报表使用
@@ -2302,7 +2326,7 @@ class zabbix_api:
                 "sortfield":["clock", "eventid"],
                 "sortorder":"DESC",
                 "limit":1
-            } 
+            }
         data_params = {
                 "output":"extend",
                 "source":0,
@@ -2311,7 +2335,7 @@ class zabbix_api:
                 "time_from":time_from,
                 "time_till":time_till,
                 "sortfield":["eventid"],
-            } 
+            }
         #
         # default startstatus(OK)--"0",startstatus(Problems)---"1"
         startstatus = "0"
@@ -2322,7 +2346,7 @@ class zabbix_api:
         ## 获取区间内状态
         response=self.zapi.event.get(data_params)
         ### 如果当前区间没有触发器事件变动，则可用性为区间前的状态
-        
+
         if not response:
             ### 区间前的状态为 problem 时返回0
             if startstatus == "1":
@@ -2419,7 +2443,7 @@ class zabbix_api:
                         "hostid": host[0]
                     }
                 ],
-                
+
                 "templates": [
                     {
                         "templateid":templates_info[0]["templateid"]
@@ -2428,11 +2452,109 @@ class zabbix_api:
             })
             print("host:[%s] ip:[%s] OK"%(host[2],host[3]))
 
-            
+    def date_to_timestamp(self,date):
+        dateFormat = "%Y-%m-%d %H:%M:%S"
+        try:
+            stamp = int(time.mktime(time.strptime(date,dateFormat)))
+        except:
+            err_msg("时间格式 ['2019-05-01 00:00:00']")
+        return stamp
+
+    def timestamp_to_time(self,stamp):
+        dateFormat = "%Y-%m-%d %H:%M:%S"
+        try:
+            date = datetime.fromtimestamp(stamp).strftime(dateFormat)
+        except:
+            err_msg("时间格式 ['1550651217']")
+        return date
+
+    def get_image(self,img_url):
+        ''' 根据 url 返回图片内容
+        '''
+        res = self.session.get(img_url)
+        res_code = res.status_code
+        if res_code == 404:
+            print("can't get image from '{0}'".format(img_url))
+            return False
+
+        return res.content
+
+    def write_to_file(self,data,file_name,method='wb'):
+        with open(file_name, method) as fp:
+            fp.write(data)
+
+    def get_graph_images(self,host_names=[],filters=[],date_from='',date_till='',width=1720,img_dir='./'):
+        '''
+        get_graph_image export graph to .png
+        host_info = {
+            "hostid": 0,
+            "hostname": 0,
+            "hostimages": [
+                {
+                    "image_name": hostname,
+                    "image_url": [
+                        "http://....",
+                        "..."
+                    ]
+                },
+            ],
+        }
+        '''
+        if not len(host_names):
+            host_names = self.hostnames
+
+        if not len(filters):
+            filters = self.filters
+
+        if not os.path.exists(img_dir):
+            os.makedirs(img_dir)
+
+        period = self.date_to_timestamp(date_till) - self.date_to_timestamp(date_from)
+        all_host_info = []
+        # hostinfo = {}
+
+        # 获取 hostid graphid graph_name 生成对应的 img_url
+        for hostname in host_names:
+            hostinfo = {}
+            hostid = self.host_get(hostname)
+            hostinfo['hostid'] = hostid
+            hostinfo['hostname'] = hostname
+            hostinfo['hostimages'] = []
+            graphs_info = self.zapi.graph.get({
+                "output": "extend",
+                "hostids": hostid,
+                "filter": {
+                    "name": filters
+                }
+            })
+
+            for graph in graphs_info:
+                host_imgs = {}
+                chart_no = self.Graph_Chart[graph['name']]
+                img_url = "http://" + self.server + ":" + self.port + "/chart{4}.php?hostid={0}&graphid={1}&profileIdx2={1}&period={2}&isNow=1&profileIdx=web.graphs&width={3}".format(hostid,graph['graphid'],period,width,chart_no)
+                img_name = "%s/%s-%s.png"%(img_dir,hostname.strip().replace(" ","_"),str(graph['name'].strip().replace(" ","_").replace("/","_")).lower())
+                host_imgs['image_url'] = img_url
+                host_imgs['image_name'] = img_name
+                hostinfo['hostimages'].append(host_imgs)
+
+            all_host_info.append(hostinfo)
+
+        for item in all_host_info:
+            for image_info in (item['hostimages']):
+                img_data = self.get_image(image_info['image_url'])
+                self.write_to_file(img_data,image_info['image_name'],'wb')
+
+        return all_host_info
+
+
+    def logout(self):
+        self.zapi.logout()
+
+
 if __name__ == "__main__":
     print("zabbix_manager:[%s]"% __version__)
     parser=argparse.ArgumentParser(usage='\033[43;37m#%(prog)s function param [options]\033[0m')
-   
+
     #####################################
     parser_report = parser.add_argument_group('report')
     parser_report.add_argument('--report',
@@ -2480,7 +2602,7 @@ if __name__ == "__main__":
                                 metavar=('itemkey'),
                                 dest='itemkey',
                                 help='eg: "itemkey.example"')
-    
+
     #####################################
     parser_output = parser.add_argument_group('output_input')
     parser_output.add_argument('-f',
@@ -2497,9 +2619,9 @@ if __name__ == "__main__":
                         help="add the xls's title")
     parser_output.add_argument('--sort',nargs=1,metavar=('num'),dest='output_sort',default="OFF",help='设置第几列进行排序')
     parser_output.add_argument('--desc',dest='sort_reverse',default="OFF",help='排序设置为降序',action="store_true")
-    
+
     parser.add_argument('-d',dest='debug_output',default="OFF",help='show the debug info',action="store_true")
-    
+
 
     #######################################################################################################
     if len(sys.argv)==1:
@@ -2514,27 +2636,27 @@ if __name__ == "__main__":
         terminal_table = False
         if args.terminal_table != "OFF":
             terminal_table = True
-        
+
         # 默认不输出debug信息
         debug = False
         if args.debug_output != "OFF":
             debug = True
-        
+
         # 值默认为入库值
         value_type = False
         if args.zero != "OFF":
             value_type = True
-        
+
         # 输出结果默认不排序
         output_sort=False
         if args.output_sort != "OFF":
             output_sort = args.output_sort[0]
-        
+
         # 默认排序方式为升序
         sort_reverse = False
         if args.sort_reverse != "OFF":
             sort_reverse = True
-        
+
         # 默认选中配置文件中的 zabbixserver section
         if args.profile != 'list_profile' :
             if args.profile:
@@ -2560,7 +2682,7 @@ if __name__ == "__main__":
                       "title":"OFF",
                       "title_name":u"测试"
         }
-        
+
         select_condition = {"hostgroupID":"",
                 "hostID":""
                 }
@@ -2579,14 +2701,14 @@ if __name__ == "__main__":
             hosts_file=args.switch_file[0]
         else:
             hosts_file="./switch"
-        
+
         if args.itemkey:
             itemkey_file=args.itemkey[0]
-            fd = file(itemkey_file, "r" )  
+            fd = file(itemkey_file, "r" )
             itemkey_list=[]
-            for line in fd.readlines():  
+            for line in fd.readlines():
                 line=line.replace('\t','').replace('\n','').replace(' ','')
-                itemkey_list.append(line)  
+                itemkey_list.append(line)
         else:
             itemkey_list=0
 
@@ -2594,7 +2716,7 @@ if __name__ == "__main__":
         if args.hostgroupid:
             select_condition["hostgroupID"]=args.hostgroupid[0]
             zabbix._host_set(hostgroupID=args.hostgroupid[0])
-            
+
         if args.hostid:
             select_condition["hostID"] = args.hostid[0]
             zabbix._host_set(hostID=args.hostid[0])
